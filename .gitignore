@@ -1,3 +1,5 @@
 wandb/*
 *.pyc
 checkpoints/*
+.devcontainer/*
+.vscode/*
