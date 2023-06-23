@@ -11,7 +11,7 @@ import os
 
 from models import SparseUNet, SparseEncoder
 from utils import get_data_loader, flatten_collection, optim_warmup, \
-    plot_images, update_ema, create_named_schedule_sampler, LossAwareSampler
+    plot_images, plot_images_cplx, update_ema, create_named_schedule_sampler, LossAwareSampler
 import diffusion as gd
 from diffusion import GaussianDiffusion, get_named_beta_schedule
 
@@ -46,8 +46,9 @@ def train(H, model, ema_model, encoder, train_loader, optim, diffusion, schedule
 
             global_step += 1
             x = x.to(device, non_blocking=True)
-            x = x * 2 - 1 
-
+            if H.data.channels != 2: # if data is not MRI then do the normal rescaling stuff otherwise just use dataloader scale
+                x = x * 2 - 1 
+            # print('loaded image shape: ',x.shape) # debugging
             t, weights = schedule_sampler.sample(x.size(0), device)
 
             if H.mc_integral.type == 'uniform':
@@ -115,10 +116,17 @@ def train(H, model, ema_model, encoder, train_loader, optim, diffusion, schedule
                             encoding = encoder(x[:H.train.sample_size])
                         samples, _ = diffusion.p_sample_loop(ema_model, (encoding.size(0), H.data.channels, H.data.img_size, H.data.img_size), progress=True, model_kwargs=dict(z=encoding), return_all=False)
 
-                wandb_dict |= plot_images(H, samples, title='samples', vis=vis)
+                if H.data.channels == 2:
+                    wandb_dict |= plot_images_cplx(H, samples, title='samples', vis=vis) # special ploting for complex images
+                    
+                else:
+                    wandb_dict |= plot_images(H, samples, title='samples', vis=vis)
 
                 if H.diffusion.model_mean_type == "mollified_epsilon":
-                    wandb_dict |= plot_images(H, diffusion.mollifier.undo_wiener(samples), title=f'deblurred_samples', vis=vis)
+                    if H.data.channels == 2:
+                        wandb_dict |= plot_images_cplx(H, diffusion.mollifier.undo_wiener(samples), title=f'deblurred_samples', vis=vis) # special ploting for complex images
+                    else:
+                        wandb_dict |= plot_images(H, diffusion.mollifier.undo_wiener(samples), title=f'deblurred_samples', vis=vis)
             
             if wandb_dict:
                 wandb.log(wandb_dict, step=global_step)
