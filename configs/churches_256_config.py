@@ -12,7 +12,7 @@ def get_config():
 
     config.data = data = ConfigDict()
     data.name = 'churches'
-    data.root_dir = ""
+    data.root_dir = "/csiNAS2/slow/brett"
     data.img_size = FieldReference(256)
     data.channels = 3
     data.fid_samples = 50000
