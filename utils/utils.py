@@ -14,6 +14,8 @@ from pathlib import Path
 from ml_collections import ConfigDict
 import wandb
 from tqdm import tqdm
+from utils.mri_dataloader import fastMRI_brain
+import glob
 
 ################################################################
 # CelebA Dataset
@@ -134,6 +136,12 @@ def get_data_loader(H, enumerate_data=False, override_img_size=None, flip_p=0.5,
         ])
         dataset = torchvision.datasets.ImageFolder(H.data.root_dir, transform=transform)
         dataset, val_dataset = train_val_split(dataset, train_val_split_ratio)
+    
+    elif H.data.name == 'brain':
+        file_list = glob.glob('/csiNAS2/slow/brett/fastmri_brain_preprocessed_256/AXT2/**/*.npy')
+        dataset = fastMRI_brain(file_list = file_list)
+        dataset, val_dataset = train_val_split(dataset, train_val_split_ratio)
+
     else:
         raise Exception("Dataset not recognised")
 
@@ -160,6 +168,17 @@ def plot_images(H, x, title='', norm=True, vis=None):
     
     # wandb
     x = wandb.Image(x, caption=title)
+    return {title: x}
+
+def plot_images_cplx(H, x, title='', vis=None):
+    # visdom
+    # if H.run.enable_visdom and vis is not None:
+    #     vis.images(x, win=title, opts=dict(title=title))
+    cplx_img = x[:,0] + 1j*x[:,1]
+    mag_img = torch.abs(cplx_img)[:,None]
+    # print('mag image shape:', mag_img.shape)
+    # wandb
+    x = wandb.Image(mag_img, caption=title)
     return {title: x}
     
 def update_ema(model, ema_model, ema_rate):
