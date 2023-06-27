@@ -16,6 +16,7 @@ from utils import flatten_collection, optim_warmup, \
 import diffusion as gd
 from diffusion import GaussianDiffusion, get_named_beta_schedule, SpacedDiffusion, space_timesteps
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 # Commandline arguments
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", None, "Training configuration.", lock_config=False)

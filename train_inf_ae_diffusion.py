@@ -20,6 +20,13 @@ FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", None, "Training configuration.", lock_config=True)
 flags.mark_flags_as_required(["config"])
 
+# set gpu visibility to a single gpu
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+
+
+
+
 # Torch options
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
