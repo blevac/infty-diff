@@ -138,9 +138,12 @@ def get_data_loader(H, enumerate_data=False, override_img_size=None, flip_p=0.5,
         dataset, val_dataset = train_val_split(dataset, train_val_split_ratio)
     
     elif H.data.name == 'brain':
-        file_list = glob.glob('/csiNAS2/slow/brett/fastmri_brain_preprocessed_256/AXT2/**/*.npy')
+        # file_list = glob.glob('/csiNAS2/slow/brett/fastmri_brain_preprocessed_256/AXT2/**/*.npy')
+        file_list = glob.glob('/csiNAS/brett/fastmri_brain_preprocessed_256/AXT2/**/*.npy')
+        print('total volumes: ',len(file_list))
         dataset = fastMRI_brain(file_list = file_list)
         dataset, val_dataset = train_val_split(dataset, train_val_split_ratio)
+        
 
     else:
         raise Exception("Dataset not recognised")
@@ -233,7 +236,7 @@ def load_latents(H, Encoder=None):
             x, x_flip = x.to("cuda"), x_flip.to("cuda")
             
             x = torch.cat((x, x_flip), dim=0)
-            x = x * 2 - 1
+            # x = x * 2 - 1 #remove for mri data
             with torch.no_grad():
                 with torch.cuda.amp.autocast(enabled=H.decoder.train.amp):
                     if H.decoder.model.stochastic_encoding:
@@ -267,7 +270,7 @@ def load_latents(H, Encoder=None):
             x, x_flip = x.to("cuda"), x_flip.to("cuda")
             
             x = torch.cat((x, x_flip), dim=0)
-            x = x * 2 - 1
+            # x = x * 2 - 1 # remove for mri data
             with torch.no_grad():
                 with torch.cuda.amp.autocast(enabled=H.decoder.train.amp):
                     if H.decoder.model.stochastic_encoding:
