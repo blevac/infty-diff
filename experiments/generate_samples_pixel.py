@@ -13,7 +13,6 @@ from models import SparseUNet, SparseEncoder, MLPSkipNet
 from utils import load_latents
 import diffusion as gd
 from diffusion import GaussianDiffusion, get_named_beta_schedule, SpacedDiffusion, space_timesteps
-
 os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 # Commandline arguments
 FLAGS = flags.FLAGS
@@ -42,17 +41,16 @@ def make_samples(H, latent_model, decoder, diffusion, decoder_diffusion,
     for _ in tqdm(range(H.data.fid_samples // H.train.sample_size + 1)):
         with torch.no_grad():
             with torch.cuda.amp.autocast(enabled=H.train.amp):
-                samples, _ = diffusion.p_sample_loop(
-                        latent_model, 
-                        (H.train.sample_size, 
-                        H.decoder.model.z_dim), 
-                        progress=False, 
-                        return_all=False, 
-                        clip_denoised=False
-                     )
-                samples = samples * latents_std.to(samples.dtype) + latents_mean.to(samples.dtype)
-                # print('latent shape: ', samples.shape)
-                # print(H.train.sample_size, H.decoder.model.z_dim)
+                # samples, _ = diffusion.p_sample_loop(
+                #         latent_model, 
+                #         (H.train.sample_size, 
+                #         H.decoder.model.z_dim), 
+                #         progress=False, 
+                #         return_all=False, 
+                #         clip_denoised=False
+                #      )
+                # samples = samples * latents_std.to(samples.dtype) + latents_mean.to(samples.dtype)
+                samples = torch.ones((H.train.sample_size, H.decoder.model.z_dim)).cuda()
                 img, _ = decoder_diffusion.ddim_sample_loop(
                         decoder, 
                         (H.train.sample_size, H.decoder.data.channels, img_size, img_size), 

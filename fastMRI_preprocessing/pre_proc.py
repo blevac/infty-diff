@@ -7,7 +7,8 @@ import numpy as np
 import glob
 from tqdm import tqdm
 
-data_root = "/csiNAS2/slow/brett/single_coil_fastmri_data/brain/"
+# data_root = "/csiNAS2/slow/brett/single_coil_fastmri_data/brain/""
+data_root = "/csiNAS/brett/single_coil_fastmri_data/brain/"
 
 file_list = glob.glob(os.path.join(data_root, "*.h5"))
 print(len(file_list))
@@ -72,7 +73,7 @@ LENGTH = 256
 
 class_dict = {} #keys are relative filepaths to slices and vals are class number
 
-save_root = "/csiNAS2/slow/brett/fastmri_brain_preprocessed_%d"%(LENGTH)
+save_root = "/csiNAS/brett/fastmri_brain_preprocessed_%d"%(LENGTH)
 
 
 
