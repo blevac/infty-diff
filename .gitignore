@@ -4,3 +4,5 @@ checkpoints/*
 .devcontainer/*
 .vscode/*
 _cache_*
+old_training_scripts/*
+
