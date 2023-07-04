@@ -1,31 +1,32 @@
 import torch
+from einops import rearrange
 import numpy as np
 from scipy.stats.qmc import Halton
 
 import wandb
+# import visdom
 from absl import app
 from absl import flags
 from ml_collections.config_flags import config_flags
 import time
+import copy
 import os
+from tqdm import tqdm
 
-from models import SparseUNet, SparseEncoder
+# from model import Unet
+from models import SparseUNet
+# from model_transformer_v2 import Transformer
 from utils import get_data_loader, flatten_collection, optim_warmup, \
-    plot_images, plot_images_cplx, update_ema, create_named_schedule_sampler, LossAwareSampler
+    plot_images,plot_images_cplx, update_ema, create_named_schedule_sampler, LossAwareSampler
 import diffusion as gd
 from diffusion import GaussianDiffusion, get_named_beta_schedule
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 # Commandline arguments
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", None, "Training configuration.", lock_config=True)
 flags.mark_flags_as_required(["config"])
-
-# set gpu visibility to a single gpu
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-
-
-
-
 
 # Torch options
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -34,7 +35,22 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.deterministic = False
 device = torch.device('cuda')
 
-def train(H, model, ema_model, encoder, train_loader, optim, diffusion, schedule_sampler, vis=None, checkpoint_path='', global_step=0):
+# os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+
+# Tracking functions
+def track_variable(logs, variable, name):
+    logs['track_'+name] = np.append(logs['track_'+name], variable.item())
+
+def update_logs_means(logs):
+    for name in list(logs.keys()):
+        if 'track_' in name:
+            mean_name = 'mean_'+name[6:]
+            logs[mean_name] = np.mean(logs[name])
+            logs[name] = np.array([])
+    
+from torch.profiler import profile, record_function, ProfilerActivity
+
+def train(H, model, ema_model, train_loader, test_loader, optim, diffusion, schedule_sampler, vis=None, checkpoint_path='', global_step=0):
     halton = Halton(2)
     scaler = torch.cuda.amp.GradScaler()
 
@@ -53,34 +69,40 @@ def train(H, model, ema_model, encoder, train_loader, optim, diffusion, schedule
 
             global_step += 1
             x = x.to(device, non_blocking=True)
-            if H.data.channels != 2: # if data is not MRI then do the normal rescaling stuff otherwise just use dataloader scale
+            if H.data.channels!=2: # if data is not MRI then do the normal resacaling stuff
                 x = x * 2 - 1 
-            # print('loaded image shape: ',x.shape) # debugging
+
             t, weights = schedule_sampler.sample(x.size(0), device)
 
+            # TODO: Try low discrepancy sequence from "Discretization Invariant Learning on Neural Fields"
             if H.mc_integral.type == 'uniform':
                 sample_lst = torch.stack([torch.from_numpy(np.random.choice(H.data.img_size**2, H.mc_integral.q_sample, replace=False)) for _ in range(H.train.batch_size)]).to(device)
             elif H.mc_integral.type == 'halton':
-                sample_lst = torch.stack([torch.from_numpy((halton.random(H.mc_integral.q_sample) * H.data.img_size).astype(np.int64)) for _ in range(H.train.batch_size)]).to(device)
+                # TODO: Make this completely continuous. Use grid_sample. And use continuous coordinate embeddings
+                sample_lst = torch.stack([torch.from_numpy((halton.random(H.mc_integral.q_sample) * H.data.img_size).astype(np.int64)) for _ in range(H.train.batch_size)]).to(device) # BxLx2
                 sample_lst = sample_lst[:,:,0] * H.data.img_size + sample_lst[:,:,1]
             else:
                 raise Exception('Unknown Monte Carlo Integral type')
 
             with torch.cuda.amp.autocast(enabled=H.train.amp):
-                losses = diffusion.training_losses(model, x, t, sample_lst=sample_lst, encoder=encoder)
-
+                # with profile(activities=[
+                #         ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+                #     with record_function("model_inference"):
+                losses = diffusion.training_losses(model, x, t, sample_lst=sample_lst)
                 if H.diffusion.multiscale_loss:
                     loss = (losses["multiscale_loss"] * weights).mean()
                 else:
                     loss = (losses["loss"] * weights).mean()
+            
+            # print(prof.key_averages().table(sort_by="cuda_time_total"))
+            # exit()
             
             optim.zero_grad()
             if H.train.amp:
                 scaler.scale(loss).backward()
                 scaler.unscale_(optim)
                 model_total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                encoder_total_norm = torch.nn.utils.clip_grad_norm_(encoder.parameters(), 1.0)
-                if H.optimizer.gradient_skip and max(model_total_norm, encoder_total_norm) >= H.optimizer.gradient_skip_threshold:
+                if H.optimizer.gradient_skip and model_total_norm >= H.optimizer.gradient_skip_threshold:
                     skip += 1
                 else:
                     scaler.step(optim)
@@ -88,8 +110,7 @@ def train(H, model, ema_model, encoder, train_loader, optim, diffusion, schedule
             else:
                 loss.backward()
                 model_total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                encoder_total_norm = torch.nn.utils.clip_grad_norm_(encoder.parameters(), 1.0)
-                if H.optimizer.gradient_skip and max(model_total_norm, encoder_total_norm) >= H.optimizer.gradient_skip_threshold:
+                if H.optimizer.gradient_skip and model_total_norm >= H.optimizer.gradient_skip_threshold:
                     skip += 1
                 else:
                     optim.step()
@@ -102,7 +123,7 @@ def train(H, model, ema_model, encoder, train_loader, optim, diffusion, schedule
             
             mean_loss += loss.item()
             mean_step_time += time.time() - start_time
-            mean_total_norm += max(model_total_norm, encoder_total_norm).item()
+            mean_total_norm += model_total_norm.item()
 
             wandb_dict = dict()
             if global_step % H.train.plot_graph_steps == 0 and global_step > 0:
@@ -113,15 +134,19 @@ def train(H, model, ema_model, encoder, train_loader, optim, diffusion, schedule
                 mean_step_time = 0
                 skip = 0
                 mean_total_norm = 0
+
+            # if global_step % H.train.plot_recon_steps == 0 and global_step > 0:
+            #     plot_images(H, x, title='x', vis=vis)
+            #     plot_images(H, losses["x_t"], title='x_noisy', vis=vis)
+
+                # if "pred_xstart" in losses:
+                #     plot_images(H, losses["pred_xstart"], title='recon', vis=vis)
             
             if global_step % H.train.plot_samples_steps == 0 and global_step > 0:
                 with torch.no_grad():
                     with torch.cuda.amp.autocast(enabled=H.train.amp):
-                        if H.model.stochastic_encoding:
-                            encoding = encoder(x[:H.train.sample_size])[0]
-                        else:
-                            encoding = encoder(x[:H.train.sample_size])
-                        samples, _ = diffusion.p_sample_loop(ema_model, (encoding.size(0), H.data.channels, H.data.img_size, H.data.img_size), progress=True, model_kwargs=dict(z=encoding), return_all=False)
+                        samples, _ = diffusion.p_sample_loop(ema_model, (H.train.sample_size, H.data.channels, H.data.img_size, H.data.img_size), progress=True)
+
 
                 if H.data.channels == 2:
                     wandb_dict |= plot_images_cplx(H, samples, title='samples', vis=vis) # special ploting for complex images
@@ -135,17 +160,37 @@ def train(H, model, ema_model, encoder, train_loader, optim, diffusion, schedule
                     else:
                         wandb_dict |= plot_images(H, diffusion.mollifier.undo_wiener(samples), title=f'deblurred_samples', vis=vis)
             
+            # if global_step % H.train.checkpoint_steps == 0 and global_step > 0:
+            #     # Rough approximation of test loss to assess for overfitting. TODO: Run whole loop.
+            #     total_loss, count = 0.0, 0
+            #     for x in tqdm(test_loader):
+            #         if isinstance(x, tuple) or isinstance(x, list):
+            #             x = x[0]
+            #         x = x.to(device)
+            #         for _ in range(H.train.test_loss_repeats):
+            #             t, weights = schedule_sampler.sample(x.size(0), device)
+            #             with torch.no_grad():
+            #                 with torch.cuda.amp.autocast(enabled=H.train.amp):
+            #                     losses = diffusion.training_losses(ema_model, x, t)
+            #                     loss = (losses["loss"] * weights).mean()
+            #             total_loss += loss.item()
+            #             count += 1
+            #     print(f"Test Loss: {total_loss/count}")
+            #     wandb_dict |= {'Test Loss': total_loss/count}
+
+
             if wandb_dict:
                 wandb.log(wandb_dict, step=global_step)
-
+            
             if global_step % H.train.checkpoint_steps == 0 and global_step > 0:
                 torch.save({
                         'global_step': global_step,
                         'model_state_dict': model.state_dict(),
-                        'encoder_state_dict': encoder.state_dict(),
-                        'model_ema_state_dict': ema_model.state_dict(),
+                        'model_unet_state_dict': ema_model.state_dict(),
                         'optimizer_state_dict': optim.state_dict(),
+                        # 'scheduler_state_dict': schedule.state_dict()
                     }, checkpoint_path)
+
                 
 
 def main(argv):
@@ -154,7 +199,10 @@ def main(argv):
 
     # wandb can be disabled by passing in --config.run.wandb_mode=disabled
     wandb.init(project=H.run.name, config=flatten_collection(H), save_code=True, dir=H.run.wandb_dir, mode=H.run.wandb_mode)
+    # if H.run.enable_visdom:
+    #     train_kwargs['vis'] = visdom.Visdom(server=H.run.visdom_server, port=H.run.visdom_port)
     
+
     model = SparseUNet(
         channels=H.data.channels,
         nf=H.model.nf,
@@ -196,29 +244,25 @@ def main(argv):
         dropout=H.model.uno_dropout,
         uno_base_nf=H.model.uno_base_channels
     )
-    encoder = SparseEncoder(
-        out_channels=H.model.z_dim,
-        channels=H.data.channels,
-        nf=H.model.nf,
-        img_size=H.data.img_size,
-        num_conv_blocks=H.model.num_conv_blocks,
-        knn_neighbours=H.model.knn_neighbours,
-        uno_res=H.model.uno_res,
-        uno_mults=H.model.uno_mults,
-        conv_type=H.model.uno_conv_type,
-        depthwise_sparse=H.model.depthwise_sparse,
-        kernel_size=H.model.kernel_size,
-        backend=H.model.backend,
-        blocks_per_level=H.model.uno_blocks_per_level,
-        attn_res=H.model.uno_attn_resolutions,
-        dropout_res=H.model.uno_dropout_from_resolution,
-        dropout=H.model.uno_dropout,
-        uno_base_nf=H.model.uno_base_channels,
-        stochastic=H.model.stochastic_encoding
-    )
+    # else:
+    #     model = UNet(
+    #         channels=H.data.channels,
+    #         nf=H.model.nf,
+    #         img_size=H.data.img_size,
+    #         num_conv_blocks=H.model.num_conv_blocks,
+    #         knn_neighbours=H.model.knn_neighbours,
+    #         uno_res=H.model.uno_res,
+    #         uno_mults=H.model.uno_mults,
+    #         uno_modes=H.model.uno_modes,
+    #         z_dim=H.model.z_dim,
+    #         conv_type=H.model.uno_conv_type,
+    #         depthwise_sparse=H.model.depthwise_sparse
+    #     )
+    #     ema_model = copy.deepcopy(model)
 
-    print(f"Number of parameters: {sum(p.numel() for p in model.parameters()) + sum(p.numel() for p in encoder.parameters())}")
+    print(f"Number of parameters: {sum(p.numel() for p in model.parameters())}")
 
+    # Load checkpoints
     if H.run.experiment != '':
         checkpoint_path = f'checkpoints/{H.run.experiment}/'
     else:
@@ -228,11 +272,10 @@ def main(argv):
     train_kwargs['checkpoint_path'] = checkpoint_path
 
     model = model.to(device)
-    encoder = encoder.to(device)
     ema_model = ema_model.to(device)
-    train_loader, _ = get_data_loader(H)
+    train_loader, test_loader = get_data_loader(H)
     optim = torch.optim.Adam(
-            list(model.parameters()) + list(encoder.parameters()), 
+            model.parameters(), 
             lr=H.optimizer.learning_rate, 
             betas=(H.optimizer.adam_beta1, H.optimizer.adam_beta2)
         )
@@ -242,15 +285,20 @@ def main(argv):
         print(f"Loading Model from step {state_dict['global_step']}")
         train_kwargs['global_step'] = state_dict['global_step']
         model.load_state_dict(state_dict['model_state_dict'], strict=False)
-        encoder.load_state_dict(state_dict['encoder_state_dict'], strict=False)
         ema_model.load_state_dict(state_dict['model_ema_state_dict'], strict=False)
         try:
             optim.load_state_dict(state_dict['optimizer_state_dict'])
         except ValueError:
-            print("Failed to load optim params.")
+            print("Failed to load optim.")
+
+    # timestep_respacing = [H.diffusion.steps]
+    # use_timesteps = space_timesteps(H.diffusion.steps, timestep_respacing)
+    # betas = get_named_beta_schedule(H.diffusion.noise_schedule, H.diffusion.steps)
+    # model_mean_type=(gd.ModelMeanType.EPSILON if not H.diffusion.predict_xstart else gd.ModelMeanType.START_X)
+    # model_var_type=((gd.ModelVarType.FIXED_LARGE if not H.model.sigma_small else gd.ModelVarType.FIXED_SMALL) if not H.model.learn_sigma else gd.ModelVarType.LEARNED_RANGE)
+    # loss_type = gd.LossType.MSE if H.diffusion.loss_type == 'mse' else gd.LossType.RESCALED_MSE
     
     betas = get_named_beta_schedule(H.diffusion.noise_schedule, H.diffusion.steps, resolution=H.data.img_size)
-    
     if H.diffusion.model_mean_type == "epsilon":
         model_mean_type = gd.ModelMeanType.EPSILON
     elif H.diffusion.model_mean_type == "v":
@@ -274,13 +322,12 @@ def main(argv):
             rescale_timesteps=True, 
             multiscale_loss=H.diffusion.multiscale_loss, 
             multiscale_max_img_size=H.diffusion.multiscale_max_img_size,
-            mollifier_type=H.diffusion.mollifier_type,
-            stochastic_encoding=H.model.stochastic_encoding
+            mollifier_type=H.diffusion.mollifier_type
         ).to(device)
 
     schedule_sampler = create_named_schedule_sampler(H.diffusion.schedule_sampler, diffusion)
 
-    train(H, model, ema_model, encoder, train_loader, optim, diffusion, schedule_sampler, **train_kwargs)
+    train(H, model, ema_model, train_loader, test_loader, optim, diffusion, schedule_sampler, **train_kwargs)
 
 if __name__ == '__main__':
     app.run(main)
