@@ -14,12 +14,12 @@ from utils import load_latents
 import inverse_diffusion as gd
 from inverse_diffusion import get_named_beta_schedule, InverseSpacedDiffusion, space_timesteps
 # from inverse_diffusion_mol_ksp import get_named_beta_schedule, InverseSpacedDiffusion, space_timesteps
-from inverse_utils import A_forward, A_adjoint, nrmse, to_cplx, sampling_mask_gen
+from inverse_utils import A_forward, A_adjoint, nrmse, to_cplx, sampling_mask_gen, uniform_random_sampling_mask_gen
 from diffusion import SpacedDiffusion
 import numpy as np
 import random
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 
 
@@ -71,8 +71,9 @@ def main(argv):
         gt_img = data_cont['gt_img'][0][None].cuda()
         # print('gt_img shape: ',gt_img.shape)
         # mask = data_cont['mask'][0][None].cuda()
-        mask = torch.tensor(sampling_mask_gen(ACS_perc=0.03, R=R, img_sz=gt_img.shape[-1])).cuda()
-        print('mask shape: ',mask.shape)
+        # mask = torch.tensor(sampling_mask_gen(ACS_perc=0.03, R=R, img_sz=gt_img.shape[-1])).cuda()
+        # mask = torch.tensor(uniform_random_sampling_mask_gen(R=R, img_sz=gt_img.shape[-1])).cuda()
+        # print('mask shape: ',mask.shape)
         mask = torch.zeros(1,1,sample_img_size,sample_img_size).cuda()
         mask[:,:,:,0::R]=1
 

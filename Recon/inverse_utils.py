@@ -91,3 +91,19 @@ def sampling_mask_gen(ACS_perc, R, img_sz):
     mask_batched = mask[None,None]
 
     return mask_batched
+
+def uniform_random_sampling_mask_gen(R, img_sz):
+    line_count = int(img_sz/R)
+    mask = np.zeros((img_sz,img_sz))
+    rem_lines = np.arange(img_sz)
+
+    random.shuffle(rem_lines)
+    mask_lines=rem_lines[0:line_count]
+
+
+    # print(mask_lines)
+    mask[:,mask_lines] = 1
+
+    mask_batched = mask[None,None]
+
+    return mask_batched
