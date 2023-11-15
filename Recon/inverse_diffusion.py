@@ -823,7 +823,7 @@ class InverseGaussianDiffusion(nn.Module):
         # res_error = torch.norm(Ax-self.y_mol)**1
         # print('res error: %.3f' % res_error.item())
         # print('res error sq: %.3f' % (res_error**2).item())
-        grad = torch.autograd.grad(outputs = res_error, inputs=x_mol, create_graph=True)[0]
+        grad = torch.autograd.grad(outputs = res_error,  , create_graph=True)[0]
         # grad = torch.autograd.grad(outputs = res_error, inputs=x, create_graph=True)[0]
 
         if torch.isnan(grad[0,0,0,0]):
